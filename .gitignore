@@ -1,0 +1,62 @@
+# OS / Editor
+.DS_Store
+.idea/
+.vscode/
+.history/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+.eggs/
+build/
+dist/
+pip-wheel-metadata/
+
+# Environments
+.venv/
+venv/
+env/
+ENV/
+
+# Testing / Linting / Type checking
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.pytype/
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Caches
+.cache/
+
+# Project data/artifacts (avoid committing large datasets)
+data/wikiart/
+data/wikiart_*/
+data/*_5k*/
+data/*_128/
+data/**/*.zip
+data/*.zip
+data/**/*.tar
+data/**/*.tar.gz
+data/**/*.tgz
+data/**/*.npy
+data/**/*.npz
+data/**/*.pt
+data/**/*.pth
+data/**/*.h5
+data/**/*.hdf5
+
+# Generated CSVs and samples
+data/*sample*.csv
+
+# Logs
+*.log
