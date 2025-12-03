@@ -1,3 +1,53 @@
+# Image-Caption-Generator
+
+This repo prepares subsets of the ArtEmis annotations and the WikiArt images for caption generation experiments.
+
+## Data Layout
+- `data/official_data/`
+	- Place the ArtEmis CSVs here:
+		- `artemis_dataset_release_v0.csv`
+		- `ola_dataset_release_v0.csv` (optional)
+	- Example path used by code: `data/official_data/artemis_dataset_release_v0.csv`.
+
+- `data/wikiart.zip`
+	- Upload the WikiArt archive as `data/wikiart.zip`.
+	- When unzipped, it should produce `data/wikiart/<art_style>/<image>.jpg` structure, e.g.
+		- `data/wikiart/Realism/rembrandt_woman-standing-with-raised-hands.jpg`
+
+- Generated outputs
+	- `data/artemis_sample.csv`: stratified sample of ArtEmis rows.
+	- `data/wikiart_sample/<art_style>/*.jpg`: copied images for the sample.
+	- `data/wikiart_sample_128/<art_style>/*.jpg`: resized images (128×128).
+	- Logs: `data/wikiart_logs.txt`, `data/wikiart_copy_missing.txt`, `data/wikiart_resize_errors.txt`.
+
+## Setup
+Install Python dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+## Usage
+Run the preparation script end-to-end (sample ArtEmis and copy WikiArt images):
+
+```bash
+python src/pre_processing.py
+```
+
+That script will:
+- Optionally unzip `data/wikiart.zip` into `data/wikiart/` (you can uncomment those lines in `src/pre_processing.py`).
+- Create a stratified sample from `data/official_data/artemis_dataset_release_v0.csv` into `data/artemis_sample.csv`.
+- Copy corresponding images from `data/wikiart` into `data/wikiart_sample/<art_style>/`.
+- Resize copied images to 128×128 into `data/wikiart_sample_128/<art_style>/`.
+
+## Notes
+- The ArtEmis dataset may contain multiple annotations per painting. Copy counts reflect operations; unique files on disk can be fewer due to filename collisions. The resize step processes actual files present in `data/wikiart_sample`.
+- Missing images are logged to `data/wikiart_copy_missing.txt` with the style and filename base.
+- Ensure style folder names in `data/wikiart` match the `art_style` values in the CSV.
+
+## Troubleshooting
+- Bad zip entries: corrupt files during unzip are logged in `data/wikiart_logs.txt`. Re-download the archive or skip corrupt entries.
+- If images use extensions other than `.jpg`, adjust the copy logic or normalize file names as needed.
 # Image Caption Generator - Data Processing
 
 - Purpose: Process WikiArt + Artemis datasets to create a 5k stratified subset and 128x128 resized images.
@@ -35,8 +85,3 @@ source venv/bin/activate
 - Copied images: `data/wikiart_5k/`
 - Resized images: `data/wikiart_5k_128/`
 
-## Notes
-- The script expects columns `style` and `emotion`. If your CSV uses `art_style` or `label`, it will auto-normalize.
-- It also requires an image path column (e.g., `image_path`). If your CSV differs, adjust `load_artemis_csv` in `scripts/process_data.py`.
-○ Setup and execution instructions
-○ Dataset preprocessing steps
