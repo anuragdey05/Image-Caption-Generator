@@ -20,7 +20,7 @@ from tqdm import tqdm
 
 from src.datasets.artemis_dataset import ArtEmisCaptionDataset, collate_captions
 from src.embeddings.build_vocab import PAD_IDX, Vocabulary
-from src.models.cnn_lstm_model import ImageCaptioningCNNLSTM
+from models.cnn_lstm.cnn_lstm_model import ImageCaptioningCNNLSTM
 
 
 def parse_args() -> argparse.Namespace:
