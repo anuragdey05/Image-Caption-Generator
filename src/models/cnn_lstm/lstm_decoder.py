@@ -1,4 +1,4 @@
-"""LSTM decoder used for caption generation."""
+"""LSTM decoder used for caption generation (modified to support pretrained GloVe)."""
 from __future__ import annotations
 from typing import List
 import torch
@@ -10,16 +10,29 @@ class LSTMDecoder(nn.Module):
     def __init__(
         self,
         vocab_size: int,
-        embedding_dim: int = 256,
+        embedding_dim: int = 256,       # model internal embedding dim (LSTM input size)
         hidden_dim: int = 256,
         num_layers: int = 1,
         dropout: float = 0.0,
         image_feat_dim: int = 256,
+        glove_dim: int | None = None,   # NEW: set to 300 if using 300-dim GloVe
     ) -> None:
         super().__init__()
         self.hidden_dim = hidden_dim
         self.num_layers = num_layers
-        self.embedding = nn.Embedding(vocab_size, embedding_dim, padding_idx=PAD_IDX)
+        self.model_emb_dim = embedding_dim
+
+        # If glove_dim provided and different from embedding_dim, keep embedding at glove_dim
+        # and learn a projection glove_dim -> embedding_dim. Otherwise embedding_dim == glove_dim.
+        if glove_dim is not None and glove_dim != embedding_dim:
+            self.embedding = nn.Embedding(vocab_size, glove_dim, padding_idx=PAD_IDX)
+            self.glove_proj = nn.Linear(glove_dim, embedding_dim)
+        else:
+            # either glove_dim is None, or glove_dim == embedding_dim
+            emb_size = embedding_dim if glove_dim is None else glove_dim
+            self.embedding = nn.Embedding(vocab_size, emb_size, padding_idx=PAD_IDX)
+            self.glove_proj = None  # type: ignore[assignment]
+
         self.lstm = nn.LSTM(
             input_size=embedding_dim,
             hidden_size=hidden_dim,
@@ -39,12 +52,20 @@ class LSTMDecoder(nn.Module):
         c0 = c0.permute(1, 0, 2).contiguous()
         return h0, c0
 
+    def _maybe_project(self, emb: torch.Tensor) -> torch.Tensor:
+        # emb shape: (B, T, emb_size) where emb_size == glove_dim (if provided) or embedding_dim
+        if getattr(self, "glove_proj", None) is not None:
+            return self.glove_proj(emb)
+        return emb
+
     def forward(self, captions_in: torch.Tensor, image_features: torch.Tensor) -> torch.Tensor:
         embedded = self.embedding(captions_in)
+        embedded = self._maybe_project(embedded)
         hidden, cell = self._init_state(image_features)
         outputs, _ = self.lstm(embedded, (hidden, cell))
         return self.fc(outputs)
 
+    # --- generation paths: apply projection wherever embedding is used ---
     def generate(
         self,
         image_features: torch.Tensor,
@@ -54,7 +75,6 @@ class LSTMDecoder(nn.Module):
         top_k: int = 1,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         if beam_size <= 1:
-            # default path keeps things fast for training-time sampling
             seq, lengths, scores = self._greedy_decode(image_features, max_length, greedy)
             return seq.unsqueeze(1), lengths.unsqueeze(1), scores.unsqueeze(1)
         seq, lengths, scores = self._beam_search_decode(image_features, max_length, beam_size, top_k)
@@ -77,7 +97,8 @@ class LSTMDecoder(nn.Module):
         last_step = 1
 
         for step in range(max_length):
-            embedded = self.embedding(inputs)
+            embedded = self.embedding(inputs)              # (B, 1, emb_size)
+            embedded = self._maybe_project(embedded)       # (B, 1, embedding_dim)
             outputs, (hidden, cell) = self.lstm(embedded, (hidden, cell))
             logits = self.fc(outputs[:, -1, :])
             if greedy:
@@ -86,7 +107,7 @@ class LSTMDecoder(nn.Module):
                 probs = torch.softmax(logits, dim=-1)
                 next_token = torch.multinomial(probs, num_samples=1).squeeze(1)
 
-            log_probs = torch.log_softmax(logits, dim=-1)  # work in log space for numerical stability
+            log_probs = torch.log_softmax(logits, dim=-1)
             chosen_scores = log_probs.gather(1, next_token.unsqueeze(1)).squeeze(1)
             active_mask = (~finished).float()
             scores = scores + chosen_scores * active_mask
@@ -142,6 +163,7 @@ class LSTMDecoder(nn.Module):
                         continue
                     input_token = torch.tensor([[last_token]], device=device, dtype=torch.long)
                     embedded = self.embedding(input_token)
+                    embedded = self._maybe_project(embedded)
                     outputs, (h_next, c_next) = self.lstm(embedded, (candidate["hidden"], candidate["cell"]))
                     logits = self.fc(outputs[:, -1, :])
                     log_probs = torch.log_softmax(logits, dim=-1).squeeze(0)
@@ -158,7 +180,7 @@ class LSTMDecoder(nn.Module):
                         )
                 if not new_beam:
                     break
-                new_beam.sort(key=lambda item: item["score"], reverse=True)  # keep only the most promising branches
+                new_beam.sort(key=lambda item: item["score"], reverse=True)
                 beam = new_beam[:beam_size]
 
             completed.extend(beam)
