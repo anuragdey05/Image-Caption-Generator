@@ -18,6 +18,7 @@ class DataPreparator:
     def __init__(self, data_dir: Path = Path('data')):
         self.data_dir = Path(data_dir)
         self.zip_path = self.data_dir / 'wikiart.zip'
+        self.zip_path2 = self.data_dir / 'wiki-news-300d-1M-subword.bin.zip'
         self.extract_dir = self.data_dir
         self.artemis_sample = None
 
@@ -39,6 +40,27 @@ class DataPreparator:
                     continue
                 print(f'Extracted: {member}')
         return self.extract_dir
+    
+    def unzip_fasttext(self) -> Path:
+        """
+        Unzip WikiArt from `data/wikiart.zip` into `data/wikiart/`.
+        Returns the extraction directory path.
+        """
+        self.extract_dir.mkdir(parents=True, exist_ok=True)
+        log_path = self.data_dir / 'fasttext_logs.txt'
+        with zipfile.ZipFile(self.zip_path2, 'r') as zf:
+            for member in zf.namelist():
+                try:
+                    zf.extract(member, path=self.extract_dir)
+                except Exception as e:
+                    # Log the corrupt or problematic entry and continue
+                    with open(log_path, 'a', encoding='utf-8') as lf:
+                        lf.write(f"Failed to extract: {member} | Error: {e}\n")
+                    continue
+                print(f'Extracted: {member}')
+        return self.extract_dir
+
+    
 
     def stratified_artemis(
         self,
@@ -180,15 +202,19 @@ if __name__ == '__main__':
     
     #Unzipping the WikiArt Dataset
     preparator = DataPreparator()
-    out_dir = preparator.unzip_wikiart()
-    print(f"WikiArt extracted to: {out_dir}")
+    # out_dir = preparator.unzip_wikiart()
+    # print(f"WikiArt extracted to: {out_dir}")
 
-    #Creating a stratified sample of the ArtEmis Dataset
-    preparator.stratified_artemis()
+    # #Creating a stratified sample of the ArtEmis Dataset
+    # preparator.stratified_artemis()
 
-    #Creating sample WikiArt Dataset based on the ArtEmis Sample
-    preparator.copy_images_wikiart()
+    # #Creating sample WikiArt Dataset based on the ArtEmis Sample
+    # preparator.copy_images_wikiart()
 
-    #Resizing the sampled WikiArt images to 128x128
-    resized, errors = preparator.resize_images()
-    print(f"Resized: {resized}, Errors: {errors}")
+    # #Resizing the sampled WikiArt images to 128x128
+    # resized, errors = preparator.resize_images()
+    # print(f"Resized: {resized}, Errors: {errors}")
+
+    #Unzipping the FastText embeddings
+    out_dir_fasttext = preparator.unzip_fasttext()
+    print(f"FastText embeddings extracted to: {out_dir_fasttext}")
