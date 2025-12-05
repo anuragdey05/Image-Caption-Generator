@@ -1,4 +1,4 @@
-# Image-Caption-Generator
+# Image-Caption-Generator Project
 
 This repo prepares subsets of the **ArtEmis** annotations and **WikiArt** images and trains two captioning models:
 
