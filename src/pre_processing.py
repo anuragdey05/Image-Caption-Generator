@@ -66,7 +66,7 @@ class DataPreparator:
         self,
         artemis_csv: Path = Path('data/official_data/artemis_dataset_release_v0.csv'),
         out_csv: Path = Path('data/artemis_sample.csv'),
-        n_samples: int = 2000,
+        n_samples: int = 10000,
         random_state: int = 42,
     ) -> pd.DataFrame:
         """
@@ -205,16 +205,12 @@ if __name__ == '__main__':
     # out_dir = preparator.unzip_wikiart()
     # print(f"WikiArt extracted to: {out_dir}")
 
-    # #Creating a stratified sample of the ArtEmis Dataset
-    # preparator.stratified_artemis()
+    #Creating a stratified sample of the ArtEmis Dataset
+    preparator.stratified_artemis()
 
-    # #Creating sample WikiArt Dataset based on the ArtEmis Sample
-    # preparator.copy_images_wikiart()
+    #Creating sample WikiArt Dataset based on the ArtEmis Sample
+    preparator.copy_images_wikiart()
 
-    # #Resizing the sampled WikiArt images to 128x128
-    # resized, errors = preparator.resize_images()
-    # print(f"Resized: {resized}, Errors: {errors}")
-
-    #Unzipping the FastText embeddings
-    out_dir_fasttext = preparator.unzip_fasttext()
-    print(f"FastText embeddings extracted to: {out_dir_fasttext}")
+    #Resizing the sampled WikiArt images to 128x128
+    resized, errors = preparator.resize_images()
+    print(f"Resized: {resized}, Errors: {errors}")
