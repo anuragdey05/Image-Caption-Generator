@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Callable, Tuple
 
@@ -10,6 +11,8 @@ from torch.utils.data import DataLoader, Dataset
 from src.utils.image_utils import load_image
 from src.utils.tokenization import Tokenizer
 
+logger = logging.getLogger(__name__)
+
 
 class ArtemisDataset(Dataset):
     """
@@ -17,6 +20,8 @@ class ArtemisDataset(Dataset):
     - image_tensor: (3, 128, 128) for ViT encoder
     - caption_in: decoder inputs (BOS … token_{T-1})
     - caption_out: training targets (token_1 … EOS)
+    
+    Skips samples with missing images and logs warnings.
     """
 
     def __init__(
@@ -27,22 +32,34 @@ class ArtemisDataset(Dataset):
         max_len: int,
         image_loader: Callable[[Path], torch.Tensor] = load_image,
     ) -> None:
-        self.df = pd.read_csv(csv_path)
-        if "utterance" not in self.df.columns:
+        df = pd.read_csv(csv_path)
+        if "utterance" not in df.columns:
             raise ValueError("CSV must contain an 'utterance' column.")
         self.img_root = Path(img_root)
         self.tokenizer = tokenizer
         self.max_len = max_len
         self.image_loader = image_loader
+        
+        # Filter out rows with missing images
+        self.valid_indices = []
+        for idx in range(len(df)):
+            row = df.iloc[idx]
+            img_path = self._resolve_image_path(str(row["art_style"]), str(row["painting"]))
+            if img_path.exists():
+                self.valid_indices.append(idx)
+            else:
+                logger.warning(f"Missing image: {img_path}, skipping sample {idx}")
+        
+        self.df = df.iloc[self.valid_indices].reset_index(drop=True)
+        logger.info(f"Loaded {len(self.df)}/{len(df)} samples with valid images")
 
     def __len__(self) -> int:
         return len(self.df)
 
     def _resolve_image_path(self, art_style: str, painting: str) -> Path:
-        """Gracefully handle filenames with or without extensions."""
-        base = Path(painting)
-        filename = base if base.suffix else base.with_suffix(".jpg")
-        return self.img_root / art_style / filename.name
+        """Append .jpg if the painting field lacks an extension."""
+        painting_name = painting if painting.endswith(('.jpg', '.jpeg', '.png')) else f"{painting}.jpg"
+        return self.img_root / art_style / painting_name
 
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         row = self.df.iloc[idx]
