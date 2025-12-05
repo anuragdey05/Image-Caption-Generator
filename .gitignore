@@ -65,3 +65,4 @@ data/*sample*.csv
 
 #all data
 data/**/
+src/outputfiles/

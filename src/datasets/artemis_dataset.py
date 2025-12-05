@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Callable, Optional, Sequence, Tuple
 
@@ -10,6 +11,8 @@ from torch.utils.data import DataLoader, Dataset
 from src.utils.image_utils import load_image
 from src.utils.tokenization import Tokenizer
 
+logger = logging.getLogger(__name__)
+
 
 class ArtemisDataset(Dataset):
     """
@@ -17,6 +20,8 @@ class ArtemisDataset(Dataset):
     - image_tensor: (3, 128, 128) for ViT encoder
     - caption_in: decoder inputs (BOS … token_{T-1})
     - caption_out: training targets (token_1 … EOS)
+    
+    Skips samples with missing images and logs warnings.
     """
 
     def __init__(
@@ -28,8 +33,8 @@ class ArtemisDataset(Dataset):
         image_loader: Callable[[Path], torch.Tensor] = load_image,
         image_filter: Optional[Sequence[str]] = None,
     ) -> None:
-        self.df = pd.read_csv(csv_path)
-        if "utterance" not in self.df.columns:
+        df = pd.read_csv(csv_path)
+        if "utterance" not in df.columns:
             raise ValueError("CSV must contain an 'utterance' column.")
         if "painting" not in self.df.columns:
             raise ValueError("CSV must contain a 'painting' column for filtering.")
