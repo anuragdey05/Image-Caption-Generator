@@ -19,19 +19,19 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from src.datasets.artemis_dataset import ArtEmisCaptionDataset, collate_captions
-from src.embeddings.build_vocab import PAD_IDX, Vocabulary
-from models.cnn_lstm.cnn_lstm_model import ImageCaptioningCNNLSTM
+from src.utils.tokenization import Tokenizer
+from src.models.cnn_lstm.cnn_lstm_model import ImageCaptioningCNNLSTM
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train CNN+LSTM caption model")
     parser.add_argument("--csv", dest="csv_path", type=str, required=True, help="Path to combined captions CSV")
     parser.add_argument("--images-root", type=str, required=True, help="Root folder with resized WikiArt images")
-    parser.add_argument("--vocab-path", type=str, default="data/vocab.json", help="Where to save/load the vocab")
+    parser.add_argument("--vocab-path", type=str, default="src/utils/vocab.json", help="Shared vocab JSON from tokenization.py")
     parser.add_argument("--split-path", type=str, default=None, help="Optional path to cached JSON split file")
     parser.add_argument("--min-freq", type=int, default=2, help="Minimum token frequency for vocab")
     parser.add_argument("--batch-size", type=int, default=32)
-    parser.add_argument("--epochs", type=int, default=10)
+    parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument("--val-ratio", type=float, default=0.1)
     parser.add_argument("--test-ratio", type=float, default=0.1)
     parser.add_argument("--lr", type=float, default=1e-3)
@@ -40,6 +40,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-layers", type=int, default=1)
     parser.add_argument("--dropout", type=float, default=0.1)
     parser.add_argument("--image-feat-dim", type=int, default=256)
+    parser.add_argument("--max-len", type=int, default=40, help="Max caption length including BOS/EOS tokens")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--output-dir", type=str, default="models", help="Directory to store checkpoints")
     parser.add_argument("--num-workers", type=int, default=4, help="DataLoader workers (set 0 on Windows)")
@@ -50,6 +51,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--scheduler-patience", type=int, default=2, help="Plateau scheduler patience")
     parser.add_argument("--seed", type=int, default=42, help="Global random seed")
     parser.add_argument("--log-file", type=str, default=None, help="Optional CSV log output")
+    parser.add_argument("--embedding-checkpoint", type=str, default=None, help="Optional .pt file with 'embedding_matrix' to initialize decoder embeddings (TF-IDF / GloVe / FastText)")
+    parser.add_argument("--freeze-embedding", action="store_true", help="Freeze embedding layer after loading checkpoint inputs")
+    parser.add_argument(
+        "--embedding-unfreeze-epoch",
+        type=int,
+        default=None,
+        help="Epoch number (1-indexed) at which to unfreeze the embedding layer; ignored if not frozen",
+    )
     return parser.parse_args()
 
 
@@ -60,13 +69,12 @@ def seed_everything(seed: int) -> None:
     torch.cuda.manual_seed_all(seed)
 
 
-def build_or_load_vocab(csv_path: Path, vocab_path: Path, min_freq: int) -> Vocabulary:
-    if vocab_path.exists():
-        return Vocabulary.load(vocab_path)
-    captions = pd.read_csv(csv_path)["caption"].astype(str).tolist()
-    vocab = Vocabulary.build(captions, min_freq=min_freq)
-    vocab.save(vocab_path)
-    return vocab
+def load_tokenizer(vocab_path: Path) -> Tokenizer:
+    if not vocab_path.exists():
+        raise FileNotFoundError(
+            f"Missing vocab at {vocab_path}. Please run src/utils/tokenization.py to build it first."
+        )
+    return Tokenizer.load(vocab_path)
 
 
 def build_or_load_splits(csv_path: Path, split_path: Path, val_ratio: float, test_ratio: float, seed: int) -> Dict[str, list[str]]:
@@ -75,10 +83,10 @@ def build_or_load_splits(csv_path: Path, split_path: Path, val_ratio: float, tes
             return json.load(fp)
 
     df = pd.read_csv(csv_path)
-    if "image" not in df.columns:
-        raise ValueError("Expected 'image' column in CSV for splitting")
+    if "painting" not in df.columns:
+        raise ValueError("Expected 'painting' column in CSV for splitting")
 
-    unique_images = df["image"].dropna().astype(str).unique().tolist()
+    unique_images = df["painting"].dropna().astype(str).unique().tolist()
     if not unique_images:
         raise ValueError("No image identifiers found for split generation")
 
@@ -133,6 +141,34 @@ def append_log_row(log_path: Path, row: Iterable[float]) -> None:
     with open(log_path, "a", newline="", encoding="utf-8") as fp:
         writer = csv.writer(fp)
         writer.writerow(row)
+
+
+def maybe_load_embedding_checkpoint(
+    model: ImageCaptioningCNNLSTM,
+    checkpoint_path: Path | None,
+    freeze: bool,
+) -> bool:
+    embedding = model.decoder.embedding
+    if checkpoint_path is None:
+        if freeze:
+            embedding.weight.requires_grad_(False)
+            return True
+        return False
+
+    if not checkpoint_path.exists():
+        raise FileNotFoundError(f"Embedding checkpoint not found at {checkpoint_path}")
+    payload = torch.load(checkpoint_path, map_location="cpu")
+    matrix = payload.get("embedding_matrix")
+    if matrix is None:
+        raise ValueError("Checkpoint is missing 'embedding_matrix'.")
+    if matrix.shape != embedding.weight.data.shape:
+        raise ValueError(
+            "Embedding checkpoint shape mismatch: "
+            f"expected {embedding.weight.data.shape}, got {tuple(matrix.shape)}"
+        )
+    embedding.weight.data.copy_(matrix.to(embedding.weight.device))
+    embedding.weight.requires_grad_(not freeze)
+    return freeze
 
 
 def train_one_epoch(
@@ -199,7 +235,7 @@ def evaluate(
 def save_checkpoint(
     output_dir: Path,
     model: nn.Module,
-    vocab: Vocabulary,
+    tokenizer: Tokenizer,
     args: argparse.Namespace,
     epoch: int,
     val_loss: float,
@@ -216,7 +252,7 @@ def save_checkpoint(
     torch.save(ckpt, ckpt_path)
 
     vocab_copy = output_dir / f"vocab_epoch{epoch:03d}.json"
-    vocab.save(vocab_copy)
+    tokenizer.save(vocab_copy)
     with open(output_dir / "training_history.json", "w", encoding="utf-8") as fp:
         json.dump(history, fp, indent=2)
 
@@ -231,16 +267,37 @@ def main() -> None:
 
     seed_everything(args.seed)
 
-    vocab = build_or_load_vocab(csv_path, vocab_path, args.min_freq)
+    if args.embedding_unfreeze_epoch is not None and args.embedding_unfreeze_epoch < 1:
+        raise ValueError("embedding-unfreeze-epoch must be >= 1 when provided")
+
+    tokenizer = load_tokenizer(vocab_path)
     split_path = Path(args.split_path) if args.split_path else csv_path.parent / "splits.json"
     splits = build_or_load_splits(csv_path, split_path, args.val_ratio, args.test_ratio, args.seed)
 
-    train_dataset = ArtEmisCaptionDataset(csv_path=csv_path, images_root=images_root, vocab=vocab, image_filter=set(splits["train"]))
-    val_dataset = ArtEmisCaptionDataset(csv_path=csv_path, images_root=images_root, vocab=vocab, image_filter=set(splits["val"]))
+    train_dataset = ArtEmisCaptionDataset(
+        csv_path=csv_path,
+        img_root=images_root,
+        tokenizer=tokenizer,
+        max_len=args.max_len,
+        image_filter=set(splits["train"]),
+    )
+    val_dataset = ArtEmisCaptionDataset(
+        csv_path=csv_path,
+        img_root=images_root,
+        tokenizer=tokenizer,
+        max_len=args.max_len,
+        image_filter=set(splits["val"]),
+    )
     test_ids = set(splits.get("test", []))
     test_dataset = None
     if test_ids:
-        test_dataset = ArtEmisCaptionDataset(csv_path=csv_path, images_root=images_root, vocab=vocab, image_filter=test_ids)
+        test_dataset = ArtEmisCaptionDataset(
+            csv_path=csv_path,
+            img_root=images_root,
+            tokenizer=tokenizer,
+            max_len=args.max_len,
+            image_filter=test_ids,
+        )
 
     train_loader = DataLoader(
         train_dataset,
@@ -271,7 +328,7 @@ def main() -> None:
 
     device = torch.device(args.device)
     model = ImageCaptioningCNNLSTM(
-        vocab_size=len(vocab),
+        vocab_size=len(tokenizer.word2idx),
         image_feature_dim=args.image_feat_dim,
         embedding_dim=args.embedding_dim,
         hidden_dim=args.hidden_dim,
@@ -279,7 +336,10 @@ def main() -> None:
         dropout=args.dropout,
     ).to(device)
 
-    criterion = nn.CrossEntropyLoss(ignore_index=PAD_IDX)
+    embedding_ckpt = Path(args.embedding_checkpoint) if args.embedding_checkpoint else None
+    embedding_frozen = maybe_load_embedding_checkpoint(model, embedding_ckpt, args.freeze_embedding)
+
+    criterion = nn.CrossEntropyLoss(ignore_index=tokenizer.pad_idx)
     optimizer = Adam(model.parameters(), lr=args.lr)
 
     use_amp = device.type == "cuda" and not args.no_amp
@@ -289,7 +349,6 @@ def main() -> None:
         mode="min",
         factor=args.scheduler_factor,
         patience=args.scheduler_patience,
-        verbose=True,
     )
     early_stopper = EarlyStopping(patience=args.early_stop_patience)
 
@@ -300,6 +359,15 @@ def main() -> None:
     history: list[dict[str, float]] = []
 
     for epoch in range(1, args.epochs + 1):
+        if (
+            embedding_frozen
+            and args.embedding_unfreeze_epoch is not None
+            and epoch >= args.embedding_unfreeze_epoch
+        ):
+            model.decoder.embedding.weight.requires_grad_(True)
+            embedding_frozen = False
+            print(f"[train] Unfroze embedding layer at epoch {epoch}")
+
         train_loss, grad_norm = train_one_epoch(model, train_loader, optimizer, criterion, device, scaler, args.max_grad_norm)
         val_loss = evaluate(model, val_loader, criterion, device, use_amp)
         scheduler.step(val_loss)
@@ -311,7 +379,7 @@ def main() -> None:
 
         if val_loss < best_val_loss:
             best_val_loss = val_loss
-            save_checkpoint(output_dir, model, vocab, args, epoch, val_loss, history)
+            save_checkpoint(output_dir, model, tokenizer, args, epoch, val_loss, history)
 
         if early_stopper.step(val_loss):
             print("early stopping triggered")

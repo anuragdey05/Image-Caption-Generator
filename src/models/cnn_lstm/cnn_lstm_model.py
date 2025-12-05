@@ -3,8 +3,8 @@ from __future__ import annotations
 from typing import Tuple, Union
 import torch
 from torch import nn
-from models.cnn_lstm.cnn_encoder import CNNEncoder
-from models.cnn_lstm.lstm_decoder import LSTMDecoder
+from src.models.cnn_lstm.cnn_encoder import CNNEncoder
+from src.models.cnn_lstm.lstm_decoder import LSTMDecoder
 
 
 class ImageCaptioningCNNLSTM(nn.Module):
