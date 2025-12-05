@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Callable, Tuple
+from typing import Callable, Optional, Sequence, Tuple
 
 import pandas as pd
 import torch
@@ -26,28 +26,87 @@ class ArtemisDataset(Dataset):
         tokenizer: Tokenizer,
         max_len: int,
         image_loader: Callable[[Path], torch.Tensor] = load_image,
+        image_filter: Optional[Sequence[str]] = None,
     ) -> None:
         self.df = pd.read_csv(csv_path)
         if "utterance" not in self.df.columns:
             raise ValueError("CSV must contain an 'utterance' column.")
+        if "painting" not in self.df.columns:
+            raise ValueError("CSV must contain a 'painting' column for filtering.")
+        if image_filter is not None:
+            filter_set = {str(item) for item in image_filter}
+            self.df = self.df[self.df["painting"].astype(str).isin(filter_set)]
+        self.df = self.df.reset_index(drop=True)
         self.img_root = Path(img_root)
         self.tokenizer = tokenizer
         self.max_len = max_len
         self.image_loader = image_loader
+        self._resolved_paths = self._build_image_index()
 
     def __len__(self) -> int:
         return len(self.df)
 
     def _resolve_image_path(self, art_style: str, painting: str) -> Path:
-        """Gracefully handle filenames with or without extensions."""
-        base = Path(painting)
-        filename = base if base.suffix else base.with_suffix(".jpg")
-        return self.img_root / art_style / filename.name
+        """Gracefully handle filenames with or without usable extensions."""
+        known_exts = (".jpg", ".jpeg", ".png")
+        base_name = Path(painting).name
+        lower_name = base_name.lower()
+
+        candidate_names: list[str]
+        if any(lower_name.endswith(ext) for ext in known_exts):
+            candidate_names = [base_name]
+        else:
+            candidate_names = [f"{base_name}{ext}" for ext in known_exts]
+
+        # de-duplicate while preserving order
+        seen = set()
+        ordered_candidates = []
+        for name in candidate_names:
+            if name not in seen:
+                ordered_candidates.append(name)
+                seen.add(name)
+
+        style_root = self.img_root / art_style
+        for name in ordered_candidates:
+            candidate = style_root / name
+            if candidate.exists():
+                return candidate
+
+        # Try matching any file that starts with the provided base name regardless of extension
+        glob_match = next(style_root.glob(f"{base_name}.*"), None)
+        if glob_match is not None:
+            return glob_match
+
+        # fallback to first candidate even if it does not currently exist
+        return style_root / ordered_candidates[0]
+
+    def _build_image_index(self) -> list[Path]:
+        resolved_paths: list[Path] = []
+        keep_indices: list[int] = []
+        for idx, row in self.df.iterrows():
+            art_style = str(row["art_style"])
+            painting = str(row["painting"])
+            path = self._resolve_image_path(art_style, painting)
+            if path.exists():
+                resolved_paths.append(path)
+                keep_indices.append(idx)
+
+        dropped = len(self.df) - len(resolved_paths)
+        if not resolved_paths:
+            raise FileNotFoundError(
+                "None of the requested image files were found under"
+                f" {self.img_root}. Verify the resized WikiArt subset."
+            )
+        if dropped > 0:
+            print(f"[ArtemisDataset] Skipped {dropped} rows with missing images.")
+
+        if dropped:
+            self.df = self.df.iloc[keep_indices].reset_index(drop=True)
+        return resolved_paths
 
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         row = self.df.iloc[idx]
-        img_path = self._resolve_image_path(str(row["art_style"]), str(row["painting"]))
-        image_tensor = self.image_loader(img_path)
+        image_tensor = self.image_loader(self._resolved_paths[idx])
 
         caption = str(row["utterance"])
         caption_ids = self.tokenizer.encode_caption(caption, self.max_len)
@@ -57,6 +116,18 @@ class ArtemisDataset(Dataset):
         caption_out = caption_tensor[1:]
 
         return image_tensor, caption_in, caption_out
+
+
+def collate_captions(batch: Sequence[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]) -> dict[str, torch.Tensor]:
+    images, captions_in, captions_out = zip(*batch)
+    return {
+        "images": torch.stack(images),
+        "captions_in": torch.stack(captions_in),
+        "captions_out": torch.stack(captions_out),
+    }
+
+
+ArtEmisCaptionDataset = ArtemisDataset
 
 
 if __name__ == "__main__":

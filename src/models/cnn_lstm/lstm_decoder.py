@@ -3,7 +3,11 @@ from __future__ import annotations
 from typing import List
 import torch
 from torch import nn
-from src.embeddings.build_vocab import END_IDX, PAD_IDX, START_IDX
+from src.utils.tokenization import BOS_TOKEN, EOS_TOKEN, PAD_TOKEN
+
+PAD_IDX = 0
+START_IDX = 1
+END_IDX = 2
 
 
 class LSTMDecoder(nn.Module):
